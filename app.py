@@ -12,11 +12,12 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-GEMINI_API_KEY = "AIzaSyBxIAhNOwxn0UuoQFyuvYa2FbOWAkE3z7k" 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 GROUP_TOPIC = os.getenv("GROUP_TOPIC", "এটি একটি সাধারণ আলোচনার গ্রুপ।")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
 LEARNED_DATA = []
 RECENT_MESSAGES = deque(maxlen=100)
@@ -168,7 +169,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
         response = temp_model.generate_content(prompt_text)
         reply_text = response.text
-    except Exception:
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
         reply_text = "দুঃখিত, আমার সিস্টেমে সমস্যা হচ্ছে। অ্যাডমিন শীঘ্রই ঠিক করে দিবেন।"
 
     await update.message.reply_text(reply_text)
