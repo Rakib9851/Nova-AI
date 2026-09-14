@@ -5,13 +5,6 @@ import asyncio
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# লাইব্রেরি ইমপোর্টের আগেই মূল থ্রেডের ইভেন্ট লুপ নিশ্চিত করা
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
 import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -32,18 +25,40 @@ USER_WARNINGS = {}
 BAD_WORDS = ["badword1", "badword2", "scam", "spam"] 
 
 def get_ai_response(prompt_text: str) -> str:
-    """গুগল এআই থেকে উত্তর আনার ফাংশন"""
-    # প্রথমে ৩.৭ ফ্ল্যাশ ট্রাই করবে, সমস্যা হলে ৩.৫ ফ্ল্যাশ লাইট ব্যবহার করবে
-    models_to_try = ["gemini-3.7-flash", "gemini-3.5-flash-lite"]
-    for m in models_to_try:
+    """স্বয়ংক্রিয়ভাবে কার্যকর মডেল খুঁজে উত্তর আনার ফাংশন"""
+    # আপনার AI Studio-তে থাকা সক্রিয় মডেলগুলোর তালিকা
+    target_models = [
+        "gemini-3.7-flash", 
+        "gemini-3.5-flash-lite", 
+        "gemini-3.8-flash",
+        "gemini-2.0-flash", 
+        "gemini-1.5-flash-latest"
+    ]
+    
+    for m_name in target_models:
         try:
-            model = genai.GenerativeModel(m)
-            response = model.generate_content(prompt_text)
-            if response and response.text:
-                return response.text
+            model = genai.GenerativeModel(m_name)
+            res = model.generate_content(prompt_text)
+            if res and res.text:
+                return res.text
         except Exception:
             continue
-    raise RuntimeError("উপযুক্ত কোনো এআই মডেল থেকে উত্তর পাওয়া যায়নি।")
+            
+    # যদি ওপরের কোনোটি কাজ না করে, অ্যাকাউন্ট থেকে সচল মডেল খুঁজে নেওয়া
+    try:
+        for m in genai.list_models():
+            if "generateContent" in m.supported_generation_methods:
+                model_id = m.name.replace("models/", "")
+                try:
+                    res = genai.GenerativeModel(model_id).generate_content(prompt_text)
+                    if res and res.text:
+                        return res.text
+                except Exception:
+                    continue
+    except Exception as e:
+        raise RuntimeError(f"মডেল লোড করা যায়নি: {e}")
+
+    raise RuntimeError("অ্যাকাউন্টে কোনো সক্রিয় মডেল পাওয়া যায়নি।")
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if update.effective_chat.type == "private":
@@ -215,6 +230,10 @@ def main():
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN is missing!")
         return
+
+    # ইভেন্ট লুপ ফিক্স (যাতে কোনো এরর ছাড়া Render-এ পাস করে)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     threading.Thread(target=run_server, daemon=True).start()
 
