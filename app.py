@@ -110,8 +110,13 @@ async def command_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     prompt = f"নিচের চ্যাটগুলো পড়ে বাংলায় একটি সুন্দর এবং পয়েন্ট করা সামারি তৈরি করো। বলো যে মানুষ কী কী বিষয় নিয়ে কথা বলেছে:\n\n{chat_text}"
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
+        try:
+            model = genai.GenerativeModel("gemini-3.7-flash")
+            response = model.generate_content(prompt)
+        except Exception:
+            model = genai.GenerativeModel("gemini-3.5-flash-lite")
+            response = model.generate_content(prompt)
+            
         await update.message.reply_text(f"📊 **চ্যাট সামারি:**\n\n{response.text}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"সামারি তৈরিতে সমস্যা: {e}")
@@ -158,7 +163,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
 
     learned_context = "\n".join(LEARNED_DATA)
-    system_instruction = f"""
+    full_prompt = f"""
     তুমি একটি টেলিগ্রাম গ্রুপের স্মার্ট অ্যাসিস্ট্যান্ট। 
     গ্রুপের মূল বিষয়: {GROUP_TOPIC}
     অ্যাডমিনদের থেকে শেখা বিশেষ তথ্য: {learned_context}
@@ -168,11 +173,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ২. তোমার কাছে দেওয়া তথ্যের ভিত্তিতে উত্তর দিবে। 
     ৩. যদি কেউ এমন কিছু জিজ্ঞেস করে যা তুমি জানো না, তাহলে বানিয়ে বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়টি আমার জানা নেই। অ্যাডমিন অনলাইনে আসলে আপনাকে সাহায্য করবেন।"
     ৪. পয়েন্ট করে ছোট আকারে উত্তর দিবে।
+    
+    ইউজারের প্রশ্ন: {prompt_text}
     """
 
     try:
-        temp_model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
-        response = temp_model.generate_content(prompt_text)
+        try:
+            temp_model = genai.GenerativeModel("gemini-3.7-flash")
+            response = temp_model.generate_content(full_prompt)
+        except Exception:
+            temp_model = genai.GenerativeModel("gemini-3.5-flash-lite")
+            response = temp_model.generate_content(full_prompt)
+            
         reply_text = response.text
     except Exception as e:
         reply_text = f"⚠️ Gemini API সমস্যা:\n{e}"
@@ -197,11 +209,11 @@ def main():
         print("Error: BOT_TOKEN is missing!")
         return
 
-    # টেলিগ্রাম এবং গুগলের মধ্যে Event Loop ঠিক করার কোড
     try:
-        asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
     except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     threading.Thread(target=run_server, daemon=True).start()
 
