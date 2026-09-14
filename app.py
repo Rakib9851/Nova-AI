@@ -24,10 +24,18 @@ USER_WARNINGS = {}
 BAD_WORDS = ["badword1", "badword2", "scam", "spam"] 
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.effective_chat.type == "private":
+        return True
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    admins = await context.bot.get_chat_administrators(chat_id)
-    return any(admin.user.id == user_id for admin in admins)
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+        return any(admin.user.id == user_id for admin in admins)
+    except Exception:
+        return False
+
+async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("হ্যালো! আমি আপনার এআই অ্যাসিস্ট্যান্ট। আপনি আমাকে যেকোনো প্রশ্ন করতে পারেন অথবা আপনার গ্রুপে অ্যাড করে অ্যাডমিন বানিয়ে দিতে পারেন।")
 
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
@@ -112,51 +120,58 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     user = update.message.from_user
+    chat_type = update.effective_chat.type
     bot_username = context.bot.username
     is_user_admin = await is_admin(update, context)
 
-    RECENT_MESSAGES.append(f"{user.first_name}: {text}")
+    if chat_type in ["group", "supergroup"]:
+        RECENT_MESSAGES.append(f"{user.first_name}: {text}")
 
-    if not is_user_admin:
-        if re.search(r"(https?://|www\.|t\.me/|\.com|\.net|\.org|\.me)", text.lower()):
-            await issue_warning(update, context, "লিংক শেয়ার করা নিষেধ!")
+        if not is_user_admin:
+            if re.search(r"(https?://|www\.|t\.me/|\.com|\.net|\.org|\.me)", text.lower()):
+                await issue_warning(update, context, "লিংক শেয়ার করা নিষেধ!")
+                return
+            
+            if any(bad_word in text.lower() for bad_word in BAD_WORDS):
+                await issue_warning(update, context, "খারাপ বা অশালীন ভাষা ব্যবহার করা নিষেধ!")
+                return
+
+        is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+        is_bot_mentioned = f"@{bot_username}" in text
+
+        if not (is_reply_to_bot or is_bot_mentioned):
             return
         
-        if any(bad_word in text.lower() for bad_word in BAD_WORDS):
-            await issue_warning(update, context, "খারাপ বা অশালীন ভাষা ব্যবহার করা নিষেধ!")
-            return
-
-    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
-    is_bot_mentioned = f"@{bot_username}" in text
-
-    if is_reply_to_bot or is_bot_mentioned:
         prompt_text = text.replace(f"@{bot_username}", "").strip()
-        if not prompt_text:
-            return
-        
-        await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
+    else:
+        prompt_text = text.strip()
 
-        learned_context = "\n".join(LEARNED_DATA)
-        system_instruction = f"""
-        তুমি একটি টেলিগ্রাম গ্রুপের স্মার্ট অ্যাসিস্ট্যান্ট। 
-        গ্রুপের মূল বিষয়: {GROUP_TOPIC}
-        অ্যাডমিনদের থেকে শেখা বিশেষ তথ্য: {learned_context}
-        
-        শর্তসমূহ:
-        ১. সবসময় বাংলায় এবং খুব সুন্দর, ভদ্র ভাষায় উত্তর দিবে।
-        ২. তোমার কাছে দেওয়া তথ্যের ভিত্তিতে উত্তর দিবে। 
-        ৩. যদি কেউ এমন কিছু জিজ্ঞেস করে যা তুমি জানো না, তাহলে বানিয়ে বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়টি আমার জানা নেই। অ্যাডমিন অনলাইনে আসলে আপনাকে সাহায্য করবেন।"
-        ৪. পয়েন্ট করে ছোট আকারে উত্তর দিবে।
-        """
+    if not prompt_text:
+        return
 
-        try:
-            temp_model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
-            response = temp_model.generate_content(prompt_text)
-            reply_text = response.text
-        except Exception:
-            reply_text = "দুঃখিত, আমার সিস্টেমে সমস্যা হচ্ছে। অ্যাডমিন শীঘ্রই ঠিক করে দিবেন।"
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
 
-        await update.message.reply_text(reply_text)
+    learned_context = "\n".join(LEARNED_DATA)
+    system_instruction = f"""
+    তুমি একটি টেলিগ্রাম গ্রুপের স্মার্ট অ্যাসিস্ট্যান্ট। 
+    গ্রুপের মূল বিষয়: {GROUP_TOPIC}
+    অ্যাডমিনদের থেকে শেখা বিশেষ তথ্য: {learned_context}
+    
+    শর্তসমূহ:
+    ১. সবসময় বাংলায় এবং খুব সুন্দর, ভদ্র ভাষায় উত্তর দিবে।
+    ২. তোমার কাছে দেওয়া তথ্যের ভিত্তিতে উত্তর দিবে। 
+    ৩. যদি কেউ এমন কিছু জিজ্ঞেস করে যা তুমি জানো না, তাহলে বানিয়ে বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়টি আমার জানা নেই। অ্যাডমিন অনলাইনে আসলে আপনাকে সাহায্য করবেন।"
+    ৪. পয়েন্ট করে ছোট আকারে উত্তর দিবে।
+    """
+
+    try:
+        temp_model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
+        response = temp_model.generate_content(prompt_text)
+        reply_text = response.text
+    except Exception:
+        reply_text = "দুঃখিত, আমার সিস্টেমে সমস্যা হচ্ছে। অ্যাডমিন শীঘ্রই ঠিক করে দিবেন।"
+
+    await update.message.reply_text(reply_text)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -180,6 +195,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", command_start))
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(button_callback))
     
