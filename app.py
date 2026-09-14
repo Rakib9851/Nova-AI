@@ -1,6 +1,7 @@
 import os
 import re
 import threading
+import asyncio
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -150,7 +151,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not prompt_text:
         return
 
-    # চাবি ঠিকমতো আছে কিনা চেক করা
     if not GEMINI_API_KEY:
         await update.message.reply_text("❌ Render-এ GEMINI_API_KEY দেওয়া হয়নি! দয়া করে Render এর Environment-এ GEMINI_API_KEY ভ্যারিয়েবল যোগ করুন।")
         return
@@ -175,7 +175,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = temp_model.generate_content(prompt_text)
         reply_text = response.text
     except Exception as e:
-        # আসল সমস্যাটি সরাসরি টেলিগ্রামে মেসেজ হিসেবে পাঠিয়ে দেবে
         reply_text = f"⚠️ Gemini API সমস্যা:\n{e}"
 
     await update.message.reply_text(reply_text)
@@ -197,6 +196,12 @@ def main():
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN is missing!")
         return
+
+    # টেলিগ্রাম এবং গুগলের মধ্যে Event Loop ঠিক করার কোড
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
     threading.Thread(target=run_server, daemon=True).start()
 
