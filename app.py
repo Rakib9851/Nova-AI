@@ -1,11 +1,10 @@
 import os
 import re
 import threading
-import asyncio
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import requests
 
-import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, ContextTypes, ChatMemberHandler, MessageHandler, 
@@ -16,49 +15,37 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 GROUP_TOPIC = os.getenv("GROUP_TOPIC", "এটি একটি সাধারণ আলোচনার গ্রুপ।")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip())
-
 LEARNED_DATA = []
 RECENT_MESSAGES = deque(maxlen=100)
 USER_WARNINGS = {}
 BAD_WORDS = ["badword1", "badword2", "scam", "spam"] 
 
-def get_ai_response(prompt_text: str) -> str:
-    """স্বয়ংক্রিয়ভাবে কার্যকর মডেল খুঁজে উত্তর আনার ফাংশন"""
-    # আপনার AI Studio-তে থাকা সক্রিয় মডেলগুলোর তালিকা
-    target_models = [
-        "gemini-3.7-flash", 
-        "gemini-3.5-flash-lite", 
-        "gemini-3.8-flash",
-        "gemini-2.0-flash", 
-        "gemini-1.5-flash-latest"
-    ]
+def ask_gemini(prompt_text: str) -> str:
+    """সরাসরি Google Gemini REST API থেকে উত্তর আনা (লাইব্রেরি ছাড়া)"""
+    if not GEMINI_API_KEY:
+        raise ValueError("Render-এ GEMINI_API_KEY দেওয়া হয়নি!")
     
-    for m_name in target_models:
+    # আপনার অ্যাকাউন্টের সক্রিয় নতুন মডেলগুলো
+    models_to_try = ["gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+    
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY.strip()}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [
+                {"parts": [{"text": prompt_text}]}
+            ]
+        }
+        
         try:
-            model = genai.GenerativeModel(m_name)
-            res = model.generate_content(prompt_text)
-            if res and res.text:
-                return res.text
+            res = requests.post(url, json=payload, headers=headers, timeout=25)
+            if res.status_code == 200:
+                data = res.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
         except Exception:
             continue
             
-    # যদি ওপরের কোনোটি কাজ না করে, অ্যাকাউন্ট থেকে সচল মডেল খুঁজে নেওয়া
-    try:
-        for m in genai.list_models():
-            if "generateContent" in m.supported_generation_methods:
-                model_id = m.name.replace("models/", "")
-                try:
-                    res = genai.GenerativeModel(model_id).generate_content(prompt_text)
-                    if res and res.text:
-                        return res.text
-                except Exception:
-                    continue
-    except Exception as e:
-        raise RuntimeError(f"মডেল লোড করা যায়নি: {e}")
-
-    raise RuntimeError("অ্যাকাউন্টে কোনো সক্রিয় মডেল পাওয়া যায়নি।")
+    raise RuntimeError("গুগল এআই থেকে এই মুহূর্তে উত্তর পাওয়া যায়নি।")
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if update.effective_chat.type == "private":
@@ -146,7 +133,7 @@ async def command_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     prompt = f"নিচের চ্যাটগুলো পড়ে বাংলায় একটি সুন্দর এবং পয়েন্ট করা সামারি তৈরি করো:\n\n{chat_text}"
     try:
-        summary_res = get_ai_response(prompt)
+        summary_res = ask_gemini(prompt)
         await update.message.reply_text(f"📊 **চ্যাট সামারি:**\n\n{summary_res}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"সামারি তৈরিতে সমস্যা: {e}")
@@ -186,10 +173,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not prompt_text:
         return
 
-    if not GEMINI_API_KEY:
-        await update.message.reply_text("❌ Render-এ GEMINI_API_KEY দেওয়া হয়নি!")
-        return
-
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
 
     learned_context = "\n".join(LEARNED_DATA)
@@ -207,9 +190,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
 
     try:
-        reply_text = get_ai_response(full_prompt)
+        reply_text = ask_gemini(full_prompt)
     except Exception as e:
-        reply_text = f"⚠️ Gemini API সমস্যা:\n{e}"
+        reply_text = f"⚠️ Gemini সমস্যা: {e}"
 
     await update.message.reply_text(reply_text)
 
@@ -231,10 +214,6 @@ def main():
         print("Error: BOT_TOKEN is missing!")
         return
 
-    # ইভেন্ট লুপ ফিক্স (যাতে কোনো এরর ছাড়া Render-এ পাস করে)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     threading.Thread(target=run_server, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -250,7 +229,7 @@ def main():
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
-    print("Advanced AI Group Manager Bot started!")
+    print("Advanced AI Group Manager Bot started successfully!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
