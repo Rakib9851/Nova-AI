@@ -16,8 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROUP_TOPIC = os.getenv("GROUP_TOPIC", "এটি একটি সাধারণ আলোচনার গ্রুপ।")
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    genai.configure(api_key=GEMINI_API_KEY.strip())
 
 LEARNED_DATA = []
 RECENT_MESSAGES = deque(maxlen=100)
@@ -110,10 +109,11 @@ async def command_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     prompt = f"নিচের চ্যাটগুলো পড়ে বাংলায় একটি সুন্দর এবং পয়েন্ট করা সামারি তৈরি করো। বলো যে মানুষ কী কী বিষয় নিয়ে কথা বলেছে:\n\n{chat_text}"
     try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         await update.message.reply_text(f"📊 **চ্যাট সামারি:**\n\n{response.text}", parse_mode="Markdown")
-    except Exception:
-        await update.message.reply_text("সামারি তৈরি করতে সমস্যা হয়েছে।")
+    except Exception as e:
+        await update.message.reply_text(f"সামারি তৈরিতে সমস্যা: {e}")
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -150,6 +150,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not prompt_text:
         return
 
+    # চাবি ঠিকমতো আছে কিনা চেক করা
+    if not GEMINI_API_KEY:
+        await update.message.reply_text("❌ Render-এ GEMINI_API_KEY দেওয়া হয়নি! দয়া করে Render এর Environment-এ GEMINI_API_KEY ভ্যারিয়েবল যোগ করুন।")
+        return
+
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
 
     learned_context = "\n".join(LEARNED_DATA)
@@ -170,8 +175,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = temp_model.generate_content(prompt_text)
         reply_text = response.text
     except Exception as e:
-        print(f"Gemini API Error: {e}")
-        reply_text = "দুঃখিত, আমার সিস্টেমে সমস্যা হচ্ছে। অ্যাডমিন শীঘ্রই ঠিক করে দিবেন।"
+        # আসল সমস্যাটি সরাসরি টেলিগ্রামে মেসেজ হিসেবে পাঠিয়ে দেবে
+        reply_text = f"⚠️ Gemini API সমস্যা:\n{e}"
 
     await update.message.reply_text(reply_text)
 
