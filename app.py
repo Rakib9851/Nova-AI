@@ -7,39 +7,71 @@ import requests
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, ContextTypes, ChatMemberHandler, MessageHandler,
-    CommandHandler, CallbackQueryHandler, filters
+    Application,
+    ContextTypes,
+    ChatMemberHandler,
+    MessageHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    filters
 )
 
 
+# ==============================
+# ENVIRONMENT VARIABLES
+# ==============================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROUP_TOPIC = os.getenv("GROUP_TOPIC", "এটি একটি সাধারণ আলোচনার গ্রুপ।")
+GROUP_TOPIC = os.getenv(
+    "GROUP_TOPIC",
+    "এটি একটি সাধারণ আলোচনার গ্রুপ।"
+)
 
+
+# ==============================
+# BOT DATA
+# ==============================
 
 LEARNED_DATA = []
-RECENT_MESSAGES = deque(maxlen=100)
-USER_WARNINGS = {}
-BAD_WORDS = ["badword1", "badword2", "scam", "spam"]
 
+RECENT_MESSAGES = deque(maxlen=100)
+
+USER_WARNINGS = {}
+
+BAD_WORDS = [
+    "badword1",
+    "badword2",
+    "scam",
+    "spam"
+]
+
+
+# ==============================
+# GEMINI AI
+# ==============================
 
 def ask_gemini(prompt_text: str) -> str:
-    """সরাসরি Google Gemini REST API থেকে উত্তর আনা (লাইব্রেরি ছাড়া)"""
+    """
+    Google Gemini REST API থেকে উত্তর আনা।
+    বর্তমান Gemini 3.6 Flash model ব্যবহার করা হচ্ছে।
+    """
 
     if not GEMINI_API_KEY:
-        raise ValueError("Render-এ GEMINI_API_KEY দেওয়া হয়নি!")
+        raise ValueError(
+            "Render-এ GEMINI_API_KEY দেওয়া হয়নি!"
+        )
 
-    # বর্তমানে ব্যবহারের জন্য Gemini Flash model
-    model = "gemini-2.5-flash"
+    model = "gemini-3.6-flash"
 
     url = (
-        f"https://generativelanguage.googleapis.com/"
+        "https://generativelanguage.googleapis.com/"
         f"v1beta/models/{model}:generateContent"
-        f"?key={GEMINI_API_KEY.strip()}"
     )
 
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY.strip()
     }
 
     payload = {
@@ -55,44 +87,81 @@ def ask_gemini(prompt_text: str) -> str:
     }
 
     try:
-        res = requests.post(
+        response = requests.post(
             url,
             json=payload,
             headers=headers,
-            timeout=30
+            timeout=60
         )
 
-        if res.status_code == 200:
-            data = res.json()
+        # API error হলে বিস্তারিত error দেখাবে
+        if response.status_code != 200:
 
             try:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError, TypeError):
-                raise RuntimeError(
-                    "Gemini থেকে সঠিক উত্তর পাওয়া যায়নি।"
+                error_data = response.json()
+
+                error_message = (
+                    error_data
+                    .get("error", {})
+                    .get("message", response.text)
                 )
 
-        # Google API-এর আসল error message বের করা
-        try:
-            error_data = res.json()
-            error_message = error_data.get("error", {}).get(
-                "message",
-                res.text
-            )
-        except Exception:
-            error_message = res.text
+            except Exception:
+                error_message = response.text
 
+            raise RuntimeError(
+                f"Gemini API Error {response.status_code}: "
+                f"{error_message}"
+            )
+
+        data = response.json()
+
+        # Gemini response থেকে text নেওয়া
+        candidates = data.get("candidates", [])
+
+        if not candidates:
+            raise RuntimeError(
+                "Gemini কোনো উত্তর দেয়নি।"
+            )
+
+        content = candidates[0].get("content", {})
+
+        parts = content.get("parts", [])
+
+        if not parts:
+            raise RuntimeError(
+                "Gemini response-এ কোনো text পাওয়া যায়নি।"
+            )
+
+        text = parts[0].get("text")
+
+        if not text:
+            raise RuntimeError(
+                "Gemini response-এ text খুঁজে পাওয়া যায়নি।"
+            )
+
+        return text.strip()
+
+    except requests.exceptions.Timeout:
         raise RuntimeError(
-            f"Gemini API Error {res.status_code}: {error_message}"
+            "Gemini API উত্তর দিতে বেশি সময় নিচ্ছে।"
         )
 
     except requests.exceptions.RequestException as e:
         raise RuntimeError(
-            f"Gemini connection error: {e}"
+            f"Gemini API connection error: {e}"
         )
 
 
-async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+# ==============================
+# ADMIN CHECK
+# ==============================
+
+async def is_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+
     if update.effective_chat.type == "private":
         return True
 
@@ -100,28 +169,63 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id
 
     try:
-        admins = await context.bot.get_chat_administrators(chat_id)
-        return any(admin.user.id == user_id for admin in admins)
+
+        admins = await context.bot.get_chat_administrators(
+            chat_id
+        )
+
+        return any(
+            admin.user.id == user_id
+            for admin in admins
+        )
+
     except Exception:
         return False
 
 
-async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# START COMMAND
+# ==============================
+
+async def command_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     await update.message.reply_text(
-        "হ্যালো! আমি আপনার এআই অ্যাসিস্ট্যান্ট। আপনি আমাকে যেকোনো প্রশ্ন করতে পারেন অথবা আপনার গ্রুপে অ্যাড করে অ্যাডমিন বানিয়ে দিতে পারেন।"
+        "হ্যালো! আমি আপনার এআই অ্যাসিস্ট্যান্ট। "
+        "আপনি আমাকে যেকোনো প্রশ্ন করতে পারেন অথবা "
+        "আপনার গ্রুপে অ্যাড করে অ্যাডমিন বানিয়ে দিতে পারেন।"
     )
 
 
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# WELCOME NEW MEMBERS
+# ==============================
+
+async def welcome_new_member(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     chat_member = update.chat_member
 
     joined = (
-        chat_member.new_chat_member.status in ["member", "administrator"]
-        and chat_member.old_chat_member.status in ["left", "kicked"]
+        chat_member.new_chat_member.status
+        in ["member", "administrator"]
+        and
+        chat_member.old_chat_member.status
+        in ["left", "kicked"]
     )
 
     if joined:
-        user_name = chat_member.new_chat_member.user.first_name
+
+        user_name = (
+            chat_member
+            .new_chat_member
+            .user
+            .first_name
+        )
 
         welcome_msg = (
             f"স্বাগতম {user_name}! 🎉\n"
@@ -138,7 +242,9 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ]
         ]
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(
+            keyboard
+        )
 
         await context.bot.send_message(
             chat_id=chat_member.chat.id,
@@ -147,11 +253,21 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# BUTTON CALLBACK
+# ==============================
+
+async def button_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     query = update.callback_query
+
     await query.answer()
 
     if query.data == "show_rules":
+
         rules = (
             "📌 **গ্রুপের নিয়ম:**\n"
             "১. কোনো স্প্যাম বা লিংক শেয়ার করা নিষেধ।\n"
@@ -165,71 +281,136 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ==============================
+# WARNING SYSTEM
+# ==============================
+
 async def issue_warning(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     reason: str
 ):
+
     user = update.message.from_user
+
     chat_id = update.message.chat_id
+
     user_id = user.id
 
-    USER_WARNINGS[user_id] = USER_WARNINGS.get(user_id, 0) + 1
+    USER_WARNINGS[user_id] = (
+        USER_WARNINGS.get(user_id, 0) + 1
+    )
+
     count = USER_WARNINGS[user_id]
 
-    await update.message.delete()
+    # User-এর message delete
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
+    # 3 warnings হলে ban
     if count >= 3:
-        await context.bot.ban_chat_member(
-            chat_id,
-            user_id
-        )
 
-        await context.bot.send_message(
-            chat_id,
-            f"🚫 {user.first_name}-কে গ্রুপ থেকে ব্যান করা হয়েছে। কারণ: ৩ বার নিয়ম ভঙ্গ।"
-        )
+        try:
+
+            await context.bot.ban_chat_member(
+                chat_id,
+                user_id
+            )
+
+            await context.bot.send_message(
+                chat_id,
+                f"🚫 {user.first_name}-কে "
+                "গ্রুপ থেকে ব্যান করা হয়েছে। "
+                "কারণ: ৩ বার নিয়ম ভঙ্গ।"
+            )
+
+        except Exception as e:
+
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ ব্যান করতে সমস্যা হয়েছে: {e}"
+            )
 
         USER_WARNINGS[user_id] = 0
 
     else:
+
         await context.bot.send_message(
             chat_id,
-            f"⚠️ **সতর্কতা!** {user.first_name}, {reason}\n"
+            f"⚠️ **সতর্কতা!** "
+            f"{user.first_name}, {reason}\n"
             f"এটি আপনার {count}/3 নং ওয়ার্নিং। "
             "৩ বার হলে ব্যান করা হবে!",
             parse_mode="Markdown"
         )
 
 
-async def command_teach(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# TEACH COMMAND
+# ==============================
+
+async def command_teach(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     if not await is_admin(update, context):
+
         await update.message.reply_text(
             "❌ এই কমান্ডটি শুধু অ্যাডমিনদের জন্য।"
         )
+
         return
 
     text = " ".join(context.args)
 
     if text:
+
         LEARNED_DATA.append(text)
 
         await update.message.reply_text(
-            "✅ আমি নতুন তথ্য শিখে নিয়েছি! এখন থেকে কেউ এটা নিয়ে প্রশ্ন করলে আমি উত্তর দিতে পারবো।"
+            "✅ আমি নতুন তথ্য শিখে নিয়েছি! "
+            "এখন থেকে কেউ এটা নিয়ে প্রশ্ন করলে "
+            "আমি উত্তর দিতে পারবো।"
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "ব্যবহার করুন:\n"
+            "/teach আপনার তথ্য"
         )
 
 
-async def command_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# BAN COMMAND
+# ==============================
+
+async def command_ban(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     if not await is_admin(update, context):
         return
 
     if not update.message.reply_to_message:
+
         await update.message.reply_text(
-            "যাকে ব্যান করতে চান, তার মেসেজে রিপ্লাই দিয়ে /ban লিখুন।"
+            "যাকে ব্যান করতে চান, "
+            "তার মেসেজে রিপ্লাই দিয়ে /ban লিখুন।"
         )
+
         return
 
-    target = update.message.reply_to_message.from_user
+    target = (
+        update
+        .message
+        .reply_to_message
+        .from_user
+    )
 
     await context.bot.ban_chat_member(
         update.message.chat_id,
@@ -241,7 +422,15 @@ async def command_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def command_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# PIN COMMAND
+# ==============================
+
+async def command_pin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     if not await is_admin(update, context):
         return
 
@@ -254,45 +443,78 @@ async def command_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def command_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================
+# SUMMARY COMMAND
+# ==============================
+
+async def command_summary(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     if not RECENT_MESSAGES:
+
         await update.message.reply_text(
-            "দুঃখিত, সামারি করার মতো যথেষ্ট চ্যাট হিস্ট্রি নেই।"
+            "দুঃখিত, সামারি করার মতো "
+            "যথেষ্ট চ্যাট হিস্ট্রি নেই।"
         )
+
         return
 
     await update.message.reply_text(
-        "⏳ আমি গত মেসেজগুলো পড়ছি এবং সামারি তৈরি করছি..."
+        "⏳ আমি গত মেসেজগুলো পড়ছি "
+        "এবং সামারি তৈরি করছি..."
     )
 
-    chat_text = "\n".join(RECENT_MESSAGES)
+    chat_text = "\n".join(
+        RECENT_MESSAGES
+    )
 
     prompt = (
-        "নিচের চ্যাটগুলো পড়ে বাংলায় একটি সুন্দর এবং পয়েন্ট করা "
-        f"সামারি তৈরি করো:\n\n{chat_text}"
+        "নিচের চ্যাটগুলো পড়ে বাংলায় "
+        "একটি সুন্দর এবং পয়েন্ট করা "
+        "সামারি তৈরি করো:\n\n"
+        f"{chat_text}"
     )
 
     try:
+
         summary_res = ask_gemini(prompt)
 
         await update.message.reply_text(
-            f"📊 **চ্যাট সামারি:**\n\n{summary_res}",
+            f"📊 **চ্যাট সামারি:**\n\n"
+            f"{summary_res}",
             parse_mode="Markdown"
         )
 
     except Exception as e:
+
         await update.message.reply_text(
             f"সামারি তৈরিতে সমস্যা: {e}"
         )
 
 
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+# ==============================
+# MESSAGE HANDLER
+# ==============================
+
+async def handle_messages(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     text = update.message.text
+
     user = update.message.from_user
+
     chat_type = update.effective_chat.type
+
     bot_username = context.bot.username
 
     is_user_admin = await is_admin(
@@ -300,105 +522,186 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context
     )
 
+
+    # ==========================
+    # GROUP / SUPERGROUP
+    # ==========================
+
     if chat_type in ["group", "supergroup"]:
+
         RECENT_MESSAGES.append(
             f"{user.first_name}: {text}"
         )
 
+        # Admin না হলে rules check
         if not is_user_admin:
 
+            # Link detection
             if re.search(
                 r"(https?://|www\.|t\.me/|\.com|\.net|\.org|\.me)",
                 text.lower()
             ):
+
                 await issue_warning(
                     update,
                     context,
                     "লিংক শেয়ার করা নিষেধ!"
                 )
+
                 return
 
+            # Bad word detection
             if any(
                 bad_word in text.lower()
                 for bad_word in BAD_WORDS
             ):
+
                 await issue_warning(
                     update,
                     context,
                     "খারাপ বা অশালীন ভাষা ব্যবহার করা নিষেধ!"
                 )
+
                 return
 
+
+        # Bot-এর message-এ reply কিনা
         is_reply_to_bot = (
             update.message.reply_to_message
-            and update.message.reply_to_message.from_user.id
+            and
+            update.message.reply_to_message.from_user
+            and
+            update.message.reply_to_message.from_user.id
             == context.bot.id
         )
 
-        is_bot_mentioned = f"@{bot_username}" in text
 
-        if not (is_reply_to_bot or is_bot_mentioned):
+        # Bot mention করা হয়েছে কিনা
+        is_bot_mentioned = (
+            f"@{bot_username}" in text
+        )
+
+
+        # Reply বা mention কোনোটাই না হলে AI response নয়
+        if not (
+            is_reply_to_bot
+            or
+            is_bot_mentioned
+        ):
             return
 
+
+        # Bot username বাদ দেওয়া
         prompt_text = text.replace(
             f"@{bot_username}",
             ""
         ).strip()
 
+
+    # ==========================
+    # PRIVATE CHAT
+    # ==========================
+
     else:
+
         prompt_text = text.strip()
+
 
     if not prompt_text:
         return
 
+
+    # Typing status
     await context.bot.send_chat_action(
         chat_id=update.message.chat_id,
         action="typing"
     )
 
-    learned_context = "\n".join(LEARNED_DATA)
+
+    # Learned data
+    learned_context = "\n".join(
+        LEARNED_DATA
+    )
+
+
+    # ==========================
+    # AI PROMPT
+    # ==========================
 
     full_prompt = f"""
 তুমি একটি টেলিগ্রাম গ্রুপের স্মার্ট অ্যাসিস্ট্যান্ট।
-গ্রুপের মূল বিষয়: {GROUP_TOPIC}
-অ্যাডমিনদের থেকে শেখা বিশেষ তথ্য: {learned_context}
+
+গ্রুপের মূল বিষয়:
+{GROUP_TOPIC}
+
+অ্যাডমিনদের থেকে শেখা বিশেষ তথ্য:
+{learned_context}
 
 শর্তসমূহ:
-১. সবসময় বাংলায় এবং ভদ্র ভাষায় উত্তর দিবে।
-২. পয়েন্ট করে ছোট আকারে উত্তর দিবে।
-৩. উত্তর না জানলে বলবে অ্যাডমিন @Rakib_1434 সহায়তা করবেন।
 
-ইউজারের প্রশ্ন: {prompt_text}
+১. সবসময় বাংলায় এবং ভদ্র ভাষায় উত্তর দিবে।
+
+২. পয়েন্ট করে ছোট আকারে উত্তর দিবে।
+
+৩. উত্তর না জানলে বলবে অ্যাডমিন
+@Rakib_1434 সহায়তা করবেন।
+
+ইউজারের প্রশ্ন:
+{prompt_text}
 """
 
+
+    # ==========================
+    # GEMINI REQUEST
+    # ==========================
+
     try:
+
         reply_text = ask_gemini(
             full_prompt
         )
 
     except Exception as e:
-        reply_text = f"⚠️ Gemini সমস্যা: {e}"
 
+        reply_text = (
+            f"⚠️ Gemini সমস্যা: {e}"
+        )
+
+
+    # AI reply
     await update.message.reply_text(
         reply_text
     )
 
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
+# ==============================
+# RENDER HEALTH CHECK SERVER
+# ==============================
+
+class HealthCheckHandler(
+    BaseHTTPRequestHandler
+):
 
     def do_GET(self):
+
         self.send_response(200)
+
         self.end_headers()
 
         self.wfile.write(
             b"Bot is alive and running!"
         )
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
         pass
 
 
 def run_server():
+
     port = int(
         os.getenv("PORT", 8080)
     )
@@ -411,20 +714,40 @@ def run_server():
     server.serve_forever()
 
 
+# ==============================
+# MAIN
+# ==============================
+
 def main():
 
     if not BOT_TOKEN:
-        print("Error: BOT_TOKEN is missing!")
+
+        print(
+            "Error: BOT_TOKEN is missing!"
+        )
+
         return
 
+
+    # Render health server
     threading.Thread(
         target=run_server,
         daemon=True
     ).start()
 
-    app = Application.builder().token(
-        BOT_TOKEN
-    ).build()
+
+    # Telegram Application
+    app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+
+    # ==========================
+    # HANDLERS
+    # ==========================
 
     app.add_handler(
         CommandHandler(
@@ -433,6 +756,7 @@ def main():
         )
     )
 
+
     app.add_handler(
         ChatMemberHandler(
             welcome_new_member,
@@ -440,11 +764,13 @@ def main():
         )
     )
 
+
     app.add_handler(
         CallbackQueryHandler(
             button_callback
         )
     )
+
 
     app.add_handler(
         CommandHandler(
@@ -453,12 +779,14 @@ def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "ban",
             command_ban
         )
     )
+
 
     app.add_handler(
         CommandHandler(
@@ -467,12 +795,14 @@ def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "summary",
             command_summary
         )
     )
+
 
     app.add_handler(
         MessageHandler(
@@ -481,14 +811,22 @@ def main():
         )
     )
 
+
     print(
-        "Advanced AI Group Manager Bot started successfully!"
+        "Advanced AI Group Manager Bot "
+        "started successfully!"
     )
 
+
+    # Start Telegram bot
     app.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# ==============================
+# START
+# ==============================
 
 if __name__ == "__main__":
     main()
